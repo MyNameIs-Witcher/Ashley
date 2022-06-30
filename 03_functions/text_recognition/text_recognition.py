@@ -1,7 +1,7 @@
 import easyocr
 
 def text_recognition(file_path):
-    reader = easyocr.Reader(lang_list=["ru", "en"], gpu=False)
+    reader = easyocr.Reader(lang_list=["ru", "en"], gpu=True)
     result = reader.readtext(file_path, detail=0, paragraph=True)
 
     return result
