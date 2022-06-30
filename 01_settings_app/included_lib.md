@@ -8,3 +8,4 @@ or
 
 *   easyocr - library for text recognition
 *   requests - library for making requests to api-servers
+*   aiogram - library for telegram
