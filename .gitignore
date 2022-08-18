@@ -2,3 +2,4 @@ venv/
 API_token.*
 test.*
 config.*
+.idea/
