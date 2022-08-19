@@ -1,3 +1,5 @@
+# -*- coding: utf8 -*-
+import os
 from weather_bot import get_weather
 from settings_app.API_token import telegram_token
 from aiogram import Bot, types
@@ -7,30 +9,27 @@ from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.utils import executor
+from aiogram.types import KeyboardButton
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
-from apscheduler.executors.pool import ThreadPoolExecutor, ProcessPoolExecutor
+
+try:
+    os.chdir('../')
+    with open(os.path.join(os.getcwd(), 'settings_app', 'hello_text.txt'), 'r', encoding="utf-8") as text_file:
+        text = text_file.read()
+except FileNotFoundError:
+    text = "В разработке"
 
 telegram_bot = Bot(token=telegram_token)
 storage = MemoryStorage()
 dispatcher = Dispatcher(bot=telegram_bot, storage=storage)
 
-url = "mysql://root:Ashley299792458@127.0.0.1/tg?charset=utf8"
+scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
 
-executors = {
-    'default': ThreadPoolExecutor(10),
-    'processpool': ProcessPoolExecutor(5)
-}
-job_defaults = {
-    'coalesce': False,
-    'max_instances': 3
-}
-scheduler = AsyncIOScheduler(executors=executors, job_defaults=job_defaults, timezone="Europe/Moscow")
-scheduler.add_jobstore(SQLAlchemyJobStore(url), 'apscheduler')
-
-buttons = ["Погода в СПб", "Погода в другом городе", "Ежедневная отправка погоды"]
+first_row = ["Погода в СПб"]
+second_row = ["Погода в другом городе"]
+third_row = ["Настройки", "Инструкция"]
 keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-keyboard.add(*buttons)
+keyboard.add(*first_row).add(*second_row).add(*third_row)
 
 users_id = list()
 
@@ -42,7 +41,35 @@ class Form(StatesGroup):
 @dispatcher.message_handler(commands=["start"])
 async def start_command(message: types.Message):
     user_id = message.from_user.id
-    await message.answer(f"Привет: {user_id}! Жми кнопку и погнали!", reply_markup=keyboard)
+    username = message.from_user.username
+    await message.answer(f"Привет {username}:{user_id}! Жми кнопку и погнали!", reply_markup=keyboard)
+
+
+@dispatcher.message_handler(Text(equals="Настройки"))
+async def start_command(set_message: types.Message):
+    set_buttons = ["Ежедневная отправка погоды"]
+    phone = ["Поделиться контактом"]
+    geo = ["Поделиться геопозицией"]
+    settings_keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    settings_keyboard.add(*set_buttons)\
+        .add(KeyboardButton(*phone, request_contact=True))\
+        .add(KeyboardButton(*geo, request_location=True))
+    await set_message.answer("Кнопка в разработке. Новые функции не за горами!", reply_markup=settings_keyboard)
+
+
+@dispatcher.message_handler(content_types=types.ContentType.CONTACT)
+async def get_number(message: types.Message):
+    print(message.contact.phone_number)
+
+
+@dispatcher.message_handler(content_types=types.ContentType.LOCATION)
+async def get_number(message: types.Message):
+    print(message.location)
+
+
+@dispatcher.message_handler(Text(equals="Инструкция"))
+async def start_command(message: types.Message):
+    await message.answer(text=text, reply_markup=keyboard)
 
 
 @dispatcher.message_handler(Text(equals="Погода в СПб"))
@@ -76,35 +103,44 @@ async def tg_daily_weather(message: types.Message):
         answer_keyboard.add(*answer_buttons)
         await message.answer("Удалить ежедневную отправку данных о погоде?", reply_markup=answer_keyboard)
 
-        @dispatcher.message_handler(Text(equals=["Да", "Нет"]))
-        async def cron_status(answer_message: types.Message):
-            if answer_message.text == "Да":
-                users_id.remove(user_id)
-                scheduler.remove_job(job_id=str(user_id))
-                await answer_message.answer("Ежедневные напоминания удалены", reply_markup=keyboard)
-            else:
-                await answer_message.answer("Хорошо, оставим тебе напоминания", reply_markup=keyboard)
     else:
         time_buttons = ["7:00", "8:00", "9:00"]
         time_keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
         time_keyboard.add(*time_buttons)
         await message.answer("В какое время отправлять данные о погоде?", reply_markup=time_keyboard)
 
-        @dispatcher.message_handler(Text(equals=["7:00", "8:00", "9:00"]))
-        async def cron_weather(time_message: types.Message):
-            if time_message.text == "7:00":
-                hour = 7
-                minutes = 0
-            elif time_message.text == "8:00":
-                hour = 8
-                minutes = 0
-            else:
-                hour = 9
-                minutes = 0
-            users_id.append(user_id)
-            scheduler.add_job(tg_cron_weather_spb, trigger="cron", hour=hour, minute=minutes, id=str(user_id),
-                              args=(dispatcher, user_id,))
-            await time_message.answer(f"Отправка уведомлений установлена на {time_message.text}", reply_markup=keyboard)
+
+@dispatcher.message_handler(Text(equals=["7:00", "8:00", "9:00"]))
+async def cron_weather(message: types.Message):
+    user_id = message.from_user.id
+    if message.text == "7:00":
+        hour = 7
+        minutes = 0
+    elif message.text == "8:00":
+        hour = 8
+        minutes = 0
+    else:
+        hour = 9
+        minutes = 0
+    users_id.append(user_id)
+    scheduler.add_job(func=tg_cron_weather_spb, args=(dispatcher, user_id,)
+                      , trigger="cron", hour=hour, minute=minutes, id=str(user_id))
+    print("Добавлена задача:", scheduler.get_job(job_id=str(user_id)))
+    print("Список активных задач:", scheduler.get_jobs())
+    await message.answer(f"Отправка уведомлений установлена на {message.text}", reply_markup=keyboard)
+
+
+@dispatcher.message_handler(Text(equals=["Да", "Нет"]))
+async def cron_status(message: types.Message):
+    user_id = message.from_user.id
+    if message.text == "Да":
+        users_id.remove(user_id)
+        print("Удалена задача:", scheduler.get_job(job_id=str(user_id)))
+        scheduler.remove_job(job_id=str(user_id))
+        print("Список активных задач:", scheduler.get_jobs())
+        await message.answer("Ежедневные напоминания удалены", reply_markup=keyboard)
+    else:
+        await message.answer("Хорошо, оставим тебе напоминания", reply_markup=keyboard)
 
 
 @dispatcher.message_handler(Text(equals="Погода в другом городе"))
@@ -132,10 +168,10 @@ async def tg_get_weather(city_message: types.Message, state: FSMContext):
     await state.finish()
 
 
-async def tg_cron_weather_spb(dp: Dispatcher, user_id):
+async def tg_cron_weather_spb(dp: Dispatcher, user_id, city="Санкт-Петербург"):
     try:
         city_name, temp, humidity, description, weather, wind, lat, lon, sunrise, sunset = \
-            get_weather("Санкт-Петербург")
+            get_weather(city)
         await dp.bot.send_message(chat_id=user_id, text=f"Прогноз погоды в {city_name}\n"
                                                         f"Температура: {temp}︒C\n"
                                                         f"Влажность: {humidity} %\n"
