@@ -22,11 +22,11 @@ def get_tg_users(table="customers"):
     return result
 
 
-def add_tg_user_to_db(user_id):
+def add_tg_user_to_db(user_id, nickname):
     with pymysql.connect(host=host, port=port, user=user, password=password,
                          database=tg_db, cursorclass=pymysql.cursors.DictCursor) as connection:
         with connection.cursor() as cursor:
-            sql = f"INSERT IGNORE INTO customers (user_id) VALUES ({user_id})"
+            sql = f"INSERT IGNORE INTO customers (user_id, nickname) VALUES ({user_id}, {nickname})"
             cursor.execute(sql)
         connection.commit()
 

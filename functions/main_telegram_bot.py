@@ -1,6 +1,7 @@
 # -*- coding: utf8 -*-
 import os
 from weather_bot import get_weather
+from server.DB import add_tg_user_to_db
 from settings_app.API_token import telegram_token
 from aiogram import Bot, types
 from aiogram.dispatcher import Dispatcher
@@ -9,8 +10,8 @@ from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.utils import executor
-from aiogram.types import KeyboardButton
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from geopy.geocoders import Nominatim
 
 try:
     os.chdir('../')
@@ -22,6 +23,7 @@ except FileNotFoundError:
 telegram_bot = Bot(token=telegram_token)
 storage = MemoryStorage()
 dispatcher = Dispatcher(bot=telegram_bot, storage=storage)
+geolocator = Nominatim(user_agent="Ashley")
 
 scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
 
@@ -31,18 +33,22 @@ third_row = ["Настройки", "Инструкция"]
 keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
 keyboard.add(*first_row).add(*second_row).add(*third_row)
 
-users_id = list()
 
-
-class Form(StatesGroup):
+class Temp(StatesGroup):
     city = State()
+
+
+users = dict()
 
 
 @dispatcher.message_handler(commands=["start"])
 async def start_command(message: types.Message):
     user_id = message.from_user.id
+    users[user_id] = dict()
     username = message.from_user.username
-    await message.answer(f"Привет {username}:{user_id}! Жми кнопку и погнали!", reply_markup=keyboard)
+    users[user_id]['username'] = username
+    add_tg_user_to_db(user_id, username)
+    await message.answer(f"Привет! Жми кнопку и погнали!", reply_markup=keyboard)
 
 
 @dispatcher.message_handler(Text(equals="Настройки"))
@@ -51,20 +57,28 @@ async def start_command(set_message: types.Message):
     phone = ["Поделиться контактом"]
     geo = ["Поделиться геопозицией"]
     settings_keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    settings_keyboard.add(*set_buttons)\
-        .add(KeyboardButton(*phone, request_contact=True))\
-        .add(KeyboardButton(*geo, request_location=True))
+    settings_keyboard.add(*set_buttons) \
+        .add(types.KeyboardButton(*phone, request_contact=True)) \
+        .add(types.KeyboardButton(*geo, request_location=True))
     await set_message.answer("Кнопка в разработке. Новые функции не за горами!", reply_markup=settings_keyboard)
 
 
 @dispatcher.message_handler(content_types=types.ContentType.CONTACT)
 async def get_number(message: types.Message):
-    print(message.contact.phone_number)
+    user_id = message.from_user.id
+    number = message.contact.phone_number
+    users[user_id]['phone'] = number
+    await message.answer("", reply_markup=keyboard)
 
 
 @dispatcher.message_handler(content_types=types.ContentType.LOCATION)
-async def get_number(message: types.Message):
-    print(message.location)
+async def get_city(message: types.Message):
+    user_id = message.from_user.id
+    loc = message.location
+    location = str(geolocator.reverse(f"{loc['latitude']}, {loc['longitude']}")).split(', ')
+    city = location[-4]
+    users[user_id]['city'] = city
+    await message.answer("", reply_markup=keyboard)
 
 
 @dispatcher.message_handler(Text(equals="Инструкция"))
@@ -93,11 +107,7 @@ async def tg_get_weather_spb(message: types.Message):
 @dispatcher.message_handler(Text(equals="Ежедневная отправка погоды"))
 async def tg_daily_weather(message: types.Message):
     user_id = message.from_user.id
-    if user_id in users_id:
-        flag = True
-    else:
-        flag = False
-    if flag:
+    if 'notifications' in users[user_id]:
         answer_buttons = ["Да", "Нет"]
         answer_keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
         answer_keyboard.add(*answer_buttons)
@@ -111,7 +121,7 @@ async def tg_daily_weather(message: types.Message):
 
 
 @dispatcher.message_handler(Text(equals=["7:00", "8:00", "9:00"]))
-async def cron_weather(message: types.Message):
+async def cron_weather(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     if message.text == "7:00":
         hour = 7
@@ -127,6 +137,7 @@ async def cron_weather(message: types.Message):
                       , trigger="cron", hour=hour, minute=minutes, id=str(user_id))
     print("Добавлена задача:", scheduler.get_job(job_id=str(user_id)))
     print("Список активных задач:", scheduler.get_jobs())
+    await state.update_data(time_to_notif=message.text)
     await message.answer(f"Отправка уведомлений установлена на {message.text}", reply_markup=keyboard)
 
 
@@ -134,7 +145,7 @@ async def cron_weather(message: types.Message):
 async def cron_status(message: types.Message):
     user_id = message.from_user.id
     if message.text == "Да":
-        users_id.remove(user_id)
+        users[user_id].pop('notifications')
         print("Удалена задача:", scheduler.get_job(job_id=str(user_id)))
         scheduler.remove_job(job_id=str(user_id))
         print("Список активных задач:", scheduler.get_jobs())
@@ -145,11 +156,11 @@ async def cron_status(message: types.Message):
 
 @dispatcher.message_handler(Text(equals="Погода в другом городе"))
 async def tg_another_weather(message: types.Message):
-    await Form.city.set()
+    await Temp.city.set()
     await message.answer("Пришли название города в чат...", reply_markup=types.ReplyKeyboardRemove())
 
 
-@dispatcher.message_handler(state=Form.city)
+@dispatcher.message_handler(state=Temp.city)
 async def tg_get_weather(city_message: types.Message, state: FSMContext):
     try:
         city_name, temp, humidity, description, weather, wind, lat, lon, sunrise, sunset = \
